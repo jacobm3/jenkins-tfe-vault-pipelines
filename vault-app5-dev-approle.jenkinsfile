@@ -1,0 +1,40 @@
+pipeline {
+    agent any
+
+    environment {
+        APPROLE_ROLE = credentials('approle_role_id')
+        APPROLE_SECRET = credentials('approle_secret_id')
+        VAULT_ADDR = "http://3.90.28.64:8200"
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout([$class: 'GitSCM', branches: [[name: '*/master']], 
+                          doGenerateSubmoduleConfigurations: false, 
+                          extensions: [], submoduleCfg: [], 
+                          userRemoteConfigs: [[credentialsId: 'jacobm3-github-token', 
+                                               url: 'https://github.com/jacobm3/jenkins-app5-dev']]])
+            }
+        }
+        stage('Apply') {
+            steps {
+                sh '''
+                set +x
+                json=$(vault write auth/approle/login role_id=$APPROLE_ROLE secret_id=$APPROLE_SECRET)
+                username=`echo $dynjson | jq -r .data.username`
+                export VAULT_TOKEN=$(echo $json | jq -r .data.auth.client_token)
+                export TFE_TOKEN=`vault kv get -field=tfe_token kv/jenkins-creds`
+                export AWS_ACCESS_KEY_ID=`vault kv get -field=AWS_ACCESS_KEY_ID kv/jenkins-creds` 
+                export AWS_SECRET_ACCESS_KEY=`vault kv get -field=AWS_SECRET_ACCESS_KEY kv/jenkins-creds` 
+                set -x
+                terraform init -no-color
+                terraform apply -auto-approve -no-color
+                aws s3 cp files/* s3://`terraform output -json | /usr/bin/jq -r .bucket_endpoint.value`
+                echo SITE: http://`terraform output -json | /usr/bin/jq -r .bucket_domain_name.value`/index.html
+                '''
+            }
+        }
+
+    }
+}
